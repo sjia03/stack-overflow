@@ -1,0 +1,252 @@
+---
+title: "stack-overflow"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-05-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Functions
+
+```{r}
+check_stationary <- function(ts, string, lag_max=60) {
+  # par(mfrow=c(2,2))
+  par(mfrow=c(1,3))
+  # Plot time series
+  ts.plot(ts, main=paste("TS of", string))
+  
+  # Add trend and mean line
+  fit <- lm(ts ~ time(ts)) 
+  abline(fit, col="red")
+  abline(h=mean(ts), col="black")
+  # Decomposition
+  # plot(decompose(ts))
+  
+  # Plot ACF and PACF
+  #op2= par(mfrow=c(1,2))
+  acf(ts, lag.max=lag_max, main=paste("ACF of", string))
+  pacf(ts, lag.max=lag_max, main=paste("PACF of", string))
+}
+```
+
+# 1) Data Processing
+
+
+```{r}
+# Import data
+sflow <- read.csv('stack-overflow.csv')
+
+# Edit data types
+sflow$month <- as.Date(paste0("01-", sflow$month), format = "%d-%y-%b")
+min(sflow$month)
+
+# Select only Python
+sflow.ts <- ts(sflow$python, start=c(2009,1,1), frequency=12)
+```
+## Split Data
+
+```{r}
+# Split intro train vs test
+sflow.train <-ts(sflow.ts[1:120], start=c(2009,1,1), frequency=12)
+sflow.test <- ts(sflow.ts[121:132], start=c(2019,1,1), frequency=12)
+# Cut off before 2010 
+sflow.train.2 <- ts(sflow.train[13:120], start=c(2010,1,1), frequency=12) # n=108
+# plot TS, ACF, PACF
+check_stationary(sflow.train.2)
+# plot histogram for normality
+hist(sflow.train.2)
+```
+
+
+## Transform
+
+```{r}
+# Stabilize variance - BC
+library(MASS)
+t = 1:length(sflow.train.2)
+fit = lm(sflow.train.2 ~ t)
+bcTransform = boxcox(sflow.train.2 ~ t,plotit = TRUE) # 0 is not in the CI
+```
+
+```{r}
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+sflow.bc = (1/lambda)*(sflow.train.2^lambda-1) 
+check_stationary(sflow.bc)
+```
+
+```{r}
+# Stabalize variance - log
+sflow.log <- log(sflow.train.2)
+check_stationary(sflow.log)
+```
+
+```{r, fig.width=15, fig.height=5}
+par(mfrow=c(1,3))
+ts.plot(sflow.train.2, main="Original")
+ts.plot(sflow.bc, main="Box-Cox Transform")
+ts.plot(sflow.log, main="Log Transform")
+
+par(mfrow=c(1,3))
+hist(sflow.train.2, main="Original", breaks=10)
+hist(sflow.bc, main="Box-Cox Transform", breaks=10)
+hist(sflow.log, main="Log Transform", breaks=10)
+```
+
+
+```{r}
+# var is most even, potentially cut off 2010 (what's going on in 2010?)
+# python started off for physcists
+# ppl being fed up w matlab (expensive)
+# originally python was not good for stats 
+# plot histogram (for each trans) and see which one looks more normal
+# probably take box-cox
+# also could choose by seeing which acf pacf after diff is easier to work with
+# check out week 8 project
+# cut off last year or so for test
+transformation <- c("Original", "Log Transform", "Box-Cox")
+var_trans <- c(var(sflow.ts), var(sflow.log), var(sflow.bc))
+trans_df <- data.frame(transformation, var_trans)
+trans_df # choose log transform
+```
+
+## Differencing
+
+### Log Transform
+
+```{r}
+# ACF has slow decay
+sflow.log1 <- diff(sflow.log, difference=1, lag=1)
+check_stationary(sflow.log1)
+# P = 1, Q=0, p=1 or p=0 or q=1
+# lag 11 pacf is an artificat of lag 12
+```
+
+```{r}
+# Seasonality in ACF (around 12??)
+sflow.log1.12 <- diff(sflow.log1, difference=1, lag=12)
+check_stationary(sflow.log1.12)
+# SMA(1)_12, SAR(1)_12
+# keep in mind differencing at lag 12 u delete 12 observations
+```
+
+```{r}
+# Try differencing again?
+sflow.log1.12.1 <- diff(sflow.log1.12, difference=1, lag=1)
+check_stationary(sflow.log1.12.1)
+```
+
+
+```{r}
+type <- c("No Difference","De-trended", "Seasonally Differenced + De-trended", "Seasonally Differenced + Den-trended twice")
+vars <- c(var(sflow.log), var(sflow.log1), var(sflow.log1.12), var(sflow.log1.12.1))
+vars_df <- data.frame(type, vars)
+vars_df # best one is seasonally differenced and de-trended
+```
+
+### Box-Cox Transform
+
+```{r}
+sflow.bc1 <- diff(sflow.bc, difference=1, lag=1)
+check_stationary(sflow.bc1)
+```
+
+```{r}
+sflow.bc.1.12 <- diff(sflow.bc1, difference=1, lag=12)
+check_stationary(sflow.bc.1.12)
+```
+
+```{r}
+sflow.bc.1.12.1 <- diff(sflow.bc.1.12, difference=1, lag=1)
+check_stationary(sflow.bc.1.12.1)
+```
+
+
+```{r}
+type <- c("No Difference","De-trended", "Seasonally Differenced + De-trended", "Seasonally Differenced + De-trended Twice")
+vars <- c(var(sflow.bc), var(sflow.bc1), var(sflow.bc.1.12), var(sflow.bc.1.12.1))
+vars_df <- data.frame(type, vars)
+vars_df # best one is seasonally differenced and de-trended
+```
+
+Choose `sflow.bc.1.12` since it has lowest variance. Check the histogram.
+
+```{r}
+hist(sflow.bc.1.12, density=20, breaks=20, col='blue', xlab='', prob=TRUE)
+x <- seq(min(sflow.bc.1.12), max(sflow.bc.1.12), length = 100)
+m <- mean(sflow.bc.1.12)
+std <- sqrt(var(sflow.bc.1.12))
+curve(dnorm(x,m,std), add=TRUE)
+```
+
+
+# 2) Model Identification
+
+## Log Transform
+
+```{r, fig.width=15, fig.height=5}
+check_stationary(sflow.log1.12, "Log Diff at Lag 1 and 12")
+```
+
+* AR(12)
+* MA(13)
+* ARMA(13,12) # 13 is weird number...
+
+Since I took seasonal difference and de-trended wouldn't it be:
+
+* SARIMA(0,1,1)x(1,1,1)_12?
+* SMA(1)_12
+* SAR(1)_12
+
+## Test Models
+
+```{r}
+library(MuMIn)
+```
+
+
+```{r}
+fit1_sma1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(0,1,1), period=12), method = "ML")
+fit1_sma1
+AICc(fit1_sma1)
+```
+```{r}
+fit1_sar1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(1,1,0), period=12), method = "ML")
+fit1_sar1
+AICc(fit1_sar1)
+```
+```{r}
+fit1_sarima1 <- arima(sflow.bc, order=c(0,1,1), seasonal=list(order=c(1,1,1), period=12), method = "ML")
+fit1_sarima1
+AICc(fit1_sarima1)
+```
+
+```{r}
+fit_ma12 <- arima(sflow.bc, order=c(0,1,12), seasonal=list(order=c(0,1,0), period=12), method = "ML")
+fit_ma12
+AICc(fit_ma12)
+```
+
+
+# 3) Model Estimation
+
+```{r}
+# REMEMBER PUT IN OG DATA THEN U PUT DIFFERENCES IN THE ORDER
+fit1_sarima1 <- arima(sflow.log, order=c(0,1,1), seasonal=list(order=c(1,1,1), period=12), method = "ML")
+fit1_sarima1
+# ar(..., method='yw') -> use this for residual
+# check AICC of these fits -> fix ma1 to 0 b/c it's in the CI and see if AICC went down
+# try all the models w diff variations of pqPQ (based on which ones have 0)
+```
+```{r}
+ar(sflow.log1.12, method="yw")
+```
+
+
+
+
+
+

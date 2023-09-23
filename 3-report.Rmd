@@ -1,0 +1,724 @@
+---
+title: "Asking Python Questions on Stack Overflow"
+author: "Stella Jia"
+date: "3 June 2022"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 1
+    number_sections: no
+    fig_caption: yes
+  html_document:
+    toc: yes
+    toc_depth: '1'
+    df_print: paged
+  word_document:
+    toc: yes
+    toc_depth: '1'
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{caption}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+subtitle: Time Series Analysis and Forecasting
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      out.width = "90%", fig.align = "center", fig.keep="all", fig.show="hold")
+library(kableExtra)
+library(knitr)
+library(tidyverse)
+library(MASS)
+library(MuMIn)
+library(UnitCircle)
+library(ggplot2)
+library(lemon)
+library(forecast)
+library(car)
+knit_print.data.frame <- lemon_print
+
+# Import data
+sflow <- read.csv('stack-overflow.csv')
+
+# outputs 3 visuals to check stationarity
+check_stationary <- function(ts, string, lag_max=60) {
+  # par(mfrow=c(2,2))
+  par(mfrow=c(1,3))
+  # Plot time series
+  ts.plot(ts, main=paste("TS of", string), cex=3)
+  
+  # Add trend and mean line
+  fit <- lm(ts ~ time(ts)) 
+  abline(fit, col="red")
+  abline(h=mean(ts), col="black")
+  # Decomposition
+  # plot(decompose(ts))
+  
+  # Plot ACF and PACF
+  #op2= par(mfrow=c(1,2))
+  acf(ts, lag.max=lag_max, main=paste("ACF of", string), cex=3)
+  pacf(ts, lag.max=lag_max, main=paste("PACF of", string), cex=3)
+}
+
+# outputs histogram compared with normal dist
+plot_hist <- function(data, plot_title) {
+  hist(data,density=20,breaks=20, col="blue", xlab="", prob=TRUE, main=paste(plot_title))
+  m <- mean(data)
+  std <- sqrt(var(data))
+  curve(dnorm(x,m,std), add=TRUE)
+}
+
+# reverses box cox transformation
+reverse_bc <- function(data, lambda) {
+  (data*lambda+1)^(1/lambda)
+}
+```
+
+\newpage
+
+# Abstract
+
+This report presents a time series analysis of Python-related questions on Stack Overflow, aiming to investigate the growth patterns and potential forecasting of Python's popularity as a programming language. By applying the Box-Jenkins methodology, we conduct a comprehensive time series analysis and utilize the obtained insights to forecast the Python question trends for 2019. While the actual data lies outside our predicted interval, this outcome highlights the nonlinearity and unpredictability inherent in programming languages and their association with evolving technological paradigms.
+
+# Introduction
+
+With AI development rising in the past decade, the most popular programming language individuals use to explore and build in this area is Python. In this project, I wanted to explore how the questions around Python have grown over time given it's popularity throughout different technology paradigms. Specifically, is there a pattern to Python questions being asked and can we **forecast** it? 
+
+The dataset I've chosen is from [Kaggle](https://www.kaggle.com/datasets/aishu200023/stackindex) and records the number of Stack Overflow questions under the Python tag from 2009 to 2019. Using the Box-Jenkins methodology, we will perform a time series analysis on the dataset and forecast the year of 2019 based on the years before. Although the true data was not within our forecasted prediction interval, this reveals the unpredictable and nonlinear nature of programming languages and tracking technological paradigms from object-oriented programming to generative AI. In the future, it would be fruitful to explore nonlinear time series models.
+
+![Box-Jenkins Method](/Users/stellajia/Desktop/UCSB/PSTAT/PSTAT174/stack-overflow/box-jenkins.png){width=50%}
+
+# Data Preprocessing
+
+## Cleaning
+
+First, the data has been split into a training (up until 2019) and testing (2019 itself). We will use the testing set to assess the accuracy of our forecast. In Figure 2 Stage 2, the data before 2012 appears to be inconsistent with the rest of the data. Thus, data before 2010 will be removed to ensure accurate forecasting while still having enough data to forecast. We will be moving forward with the data presented in Stage 3. Further characteristics of our final data can be seen in Figure 3. 
+
+```{r}
+# Edit data types
+sflow$month <- as.Date(paste0("01-", sflow$month), format = "%d-%y-%b")
+# Select only Python
+sflow.ts <- ts(sflow$python, start=c(2009,1,1), frequency=12)
+sflow.ts.cut <- ts(sflow.ts[13:132], start=c(2010,1,1), frequency=12)
+# Split intro train vs test
+sflow.train <-ts(sflow.ts[1:120], start=c(2009,1,1), frequency=12)
+sflow.test <- ts(sflow.ts[121:132], start=c(2019,1,1), frequency=12)
+# Cut off before 2010 
+sflow.train.2 <- ts(sflow.train[13:120], start=c(2010,1,1), frequency=12) # n=108
+```
+
+
+```{r, fig.width=12, fig.height=4, fig.cap="Stages of Cleaning Data"}
+par(mfrow=c(1,3))
+ts.plot(sflow.ts, main="Stage 1: Original Data")
+ts.plot(sflow.train, main="Stage 2: Training Data")
+ts.plot(sflow.train.2, main="Stage 3: Training Data w/o 2010")
+```
+
+
+Based on the following observations, it is clear that our data is **not stationary.** 
+
+(i) The data has a clear **linear trend** as shown by the red line on the time series plot. 
+(ii) There may also be some **light seasonality** as seen in the subtle periodic behavior in the time series plot.    
+(iii) After removing the data before 2010, the apparent changes throughout the data has lessened however the data still **does not have a constant variance.** 
+(iv) The ACF plot decays very slowly which means future values are heavily correlated with the past and thus, our data **does not have a constant mean.**
+
+```{r, fig.width=12, fig.height=3, fig.cap="Characteristics of Training Data", out.width = "95%"}
+par(mfrow=c(1,4))
+ts.plot(sflow.train.2, main="Time Series of Training Data")
+# Add trend and mean line
+fit <- lm(sflow.train.2 ~ time(sflow.train.2)) 
+abline(fit, col="red")
+abline(h=mean(sflow.train.2), col="blue")
+# Plot histogram
+hist(sflow.train.2, main="Histogram of Training Data")
+# Plot acf and pacf
+acf(sflow.train.2, main="ACF of Training Data", lag.max=60)
+pacf(sflow.train.2, main="PACF of Training Data", lag.max=60)
+```
+
+\newpage
+
+## Transforming
+
+Given that our data is not stationary, we must apply transformations to make it stationary. First, lets try a Box-Cox transformation. Since our 95% confidence interval for lambda does not include zero, we can conclude that a log transform wouldn't be significant.
+
+```{r, fig.width=6, fig.height=4, fig.cap="Log-Likelihood of Lambda for Box-Cox", out.width = "40%"}
+t = 1:length(sflow.train.2)
+fit = lm(sflow.train.2 ~ t)
+bcTransform = boxcox(sflow.train.2 ~ t, plotit = TRUE) # 0 is not in the CI
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+
+sflow.bc <- (1/lambda)*(sflow.train.2^lambda-1) 
+sflow.log <- log(sflow.train.2)
+```
+
+Based on Figure 5, log transform appears to have an exponential trend and the histogram is skewed to the left making it a poor option. While the data for Box-Cox isn't completely Gaussian, there is some symmetry which makes it closer to Gaussian than the log transform. Given this advantage, we will proceed with the Box-Cox transformation.
+
+```{r, fig.width=9, fig.height=6, fig.cap="Characteristics of Different Transformations"}
+par(mfrow=c(2,3))
+ts.plot(sflow.train.2, main="Original")
+ts.plot(sflow.bc, main="Box-Cox Transform")
+ts.plot(sflow.log, main="Log Transform")
+
+hist(sflow.train.2, main="Original", breaks=10)
+hist(sflow.bc, main="Box-Cox Transform", breaks=10)
+hist(sflow.log, main="Log Transform", breaks=10)
+```
+
+
+\newpage
+
+## Differencing
+
+The final step in making our data stationary is differencing. Based on the time series plot of our Box-Cox transform in Figure 5, it's clear that we have a linear trend. Thus, we can begin by differencing at lag 1. After differencing at lag 1 we have the following plots:
+
+```{r, fig.width=15, fig.height=5, fig.cap="Difference at Lag 1"}
+sflow.bc1 <- diff(sflow.bc, difference=1, lag=1)
+check_stationary(sflow.bc1, "BC(U_t), diff at lag 1")
+```
+
+From Figure 6, we can see that the trend is mostly removed where the red line of the time series plot is closer to a horizontal line (no trend) rather than a diagnoal line (indicating trend). However, the ACF now displays significance at a seasonality of 12 so we will difference once at lag 12 to remove seasonality. After differencing at lag 12 we have these plots:
+
+```{r, fig.width=15, fig.height=5, fig.cap="Difference at Lag 12"}
+sflow.bc.1.12 <- diff(sflow.bc1, difference=1, lag=12)
+check_stationary(sflow.bc.1.12, "BC(U_t), diff at lag 1 and 12")
+
+sflow.bc.1.12.1 <- diff(sflow.bc.1.12, difference=1, lag=1)
+```
+
+The red line of the trend seems to have gotten steeper however the variance appears to be a bit more stable. The ACF plot decay now resembles a stationary process and has no seasonality. Before finalizing our model, lets look at the variance of all these differences:
+
+\newpage
+
+```{r, fig.cap="Variance of Differences"}
+difference <- c("No Difference","De-trended", "Seasonally Differenced + De-trended", "Seasonally Differenced + Den-trended twice")
+variance <- c(var(sflow.bc), var(sflow.bc1), var(sflow.bc.1.12), var(sflow.bc.1.12.1))
+vars_df <- data.frame(difference, variance)
+kable(vars_df) %>% kable_styling(position = "center") # best one is seasonally differenced and de-trended
+```
+
+Based on the table, the difference with the lowest variance is the seasonally differenced + de-trended ($\nabla_1 \nabla_ {12} \text{bc} (U_t)$ where $U_t$ is our original data from 2010 to 2019). Since this model has the lowest variance, and appears stationary based on time series and P/ACF plots, we will move forward with this model. When comparing the histogram of our original data in Figure 7 with the differenced data, it also looks more Gaussian which is advantageous for the Box Jenkins method. 
+
+```{r, fig.width=15, fig.height=5, fig.cap="Comparing Histogram of Transformed Data w/ Tranformed + Differenced Data"}
+par(mfrow=c(1,2))
+plot_hist(sflow.bc, "Histogram of bc(U_t)")
+plot_hist(sflow.bc.1.12, "Histogram of bc(U_t), differenced at lag 12 & lag 1")
+```
+
+# Model Identification and Estimation
+
+```{r, fig.width=15, fig.height=5, fig.cap="ACF and PACF of Transformed Data"}
+par(mfrow=c(1,2))
+acf(sflow.bc.1.12, lag.max = 40, main="ACF of bc(U_t), differenced at lag 12 & lag 1")
+pacf(sflow.bc.1.12, lag.max=40, main="PACF of bc(U_t), differenced at lag 12 & lag 1")
+```
+
+```{r, results="hide"}
+# SMA1
+fit1_sma1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(0,1,1), period=12), method = "ML")
+#fit1_sma1
+
+# SAR1
+fit1_sar1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(1,1,0), period=12), method = "ML")
+#fit1_sar1
+#AICc(fit1_sar1)
+
+# SARIMA(0,1,0)x(1,1,1)_12
+fit1_sarima1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(1,1,1), period=12), method = "ML")
+fit1_sarima1
+#AICc(fit1_sarima1)
+
+# SARIMA(0,1,1)x(0,1,1)_12
+fit2_sarima1 <- arima(sflow.bc, order=c(0,1,1), seasonal=list(order=c(0,1,1), period=12), method = "ML")
+#fit2_sarima1
+#AICc(fit2_sarima1)
+
+# SARIMA(0,1,1)x(0,1,2)_12
+fit3_sarima1 <- arima(sflow.bc, order=c(0,1,1), seasonal=list(order=c(0,1,2), period=12), method = "ML")
+#fit3_sarima1
+#AICc(fit3_sarima1)
+#acf(residuals(fit3_sarima1))
+
+# MA(12)
+fit_ma12 <- arima(sflow.bc, order=c(0,1,12), seasonal=list(order=c(0,1,0), period=12), method = "ML")
+#fit_ma12
+#AICc(fit_ma12)
+
+# AR (12)
+fit_ar12 <- arima(sflow.bc, order=c(12,1,0), seasonal=list(order=c(0,1,0), period=12), method = "ML")
+#fit_ar12
+#AICc(fit_ar12)
+```
+
+The ACF and PACF both show a significant spike at lag 12 and 13. All lags k>13 in ACF and PACF appear to be insignificant. ACF at lag 33 goes over the CI, but we can disregard that because R underestimates Bartlett's formula. Given that behavior, here are some potential models:
+
+**Note:** Table identifies what the significant coefficients are in the third column. All coefficient and standard error values can be found in the Appendix.
+
+```{r}
+Model <- c("A. SMA(1)_12","B. SAR(1)_12", "C. SARIMA(0,1,0)x(1,1,1)_12", "D. SARIMA(0,1,1)x(0,1,1)_12", "E. SARIMA(0,1,1)x(0,1,2)_12", "F. MA(12)", "G. AR(12)")
+AICc_Value <- c(AICc(fit1_sma1), AICc(fit1_sar1), AICc(fit1_sarima1), AICc(fit2_sarima1), AICc(fit3_sarima1), AICc(fit_ma12), AICc(fit_ar12))
+Significant_Coefficients <- c("SMA1", "SAR1", "SMA1", "SMA1", "SMA1", "MA12", "AR12")
+
+aicc_summary <- data.frame(Model, AICc_Value, Significant_Coefficients)
+kable(aicc_summary) %>% kable_styling(position = "center") # best one is seasonally differenced and de-trended
+```
+
+\newpage
+
+Based on our summary table above, the models with the lowest AICc values are model A, D, C, and E. Models A-C in the table were determined based on the ACF and PACF plots of our stationary data. Models D and E were chosen after experimenting with diagnostic checking. Models F and G were chosen to show how straying away from the rule of parsimony will increase the AICc drastically. 
+
+The models C, D, and E suggest that adding any component aside from SMA1 is insignificant. Although it appears that SMA1 is the only significant coefficient, it still may be useful to see how the other models perform in diagnostic checking. If we set all insignificant coefficients to 0, we would end up with multiple SMA1 models. Thus, I chose to move forward with model A, D, and E while keeping the other coefficients. 
+
+$$
+\begin{aligned}
+\text{Model A:}&\quad \nabla_1\nabla_{12} bc(U_t)=(1-0.4149_{0.1198}B^{12})Z_t, \quad \hat \sigma_Z^2=5397 \\
+\text{Model D:}&\quad \nabla_1\nabla_{12} bc(U_t)=(1-0.1231_{0.1006}B)(1-0.4407_{0.1194}B^{12})Z_t, \quad \hat \sigma_Z^2=5296 \\
+\text{Model E:}&\quad \nabla_1\nabla_{12} bc(U_t)=(1-0.1055_{0.1056}B)(1-0.4232_{0.1181}B^{12}-0.0757_{0.1284}B^{24})Z_t, \quad \hat \sigma_Z^2=5296
+\end{aligned}
+$$
+
+To properly forecast, we need to prove that our models are stationary and invertible. All of our models only contain moving average components so it is stationary by default. Model A is invertible because $|\Theta_1|=0.4149<1$ and there is only one order. Model D is invertible because $|\theta_1|=0.1231<1$ and $|\Theta_1|=0.4407<1$. Model E is invertible because $|\theta_1|=0.106<1$ and all seasonal roots are outside the unit circle. 
+
+```{r, fig.cap="Model E Roots of MA Part, Seasonal", out.width="70%"}
+uc.check(c(1, -0.423, -0.076), plot_output=T, print_output=F)
+```
+
+\newpage
+
+# Diagnostic Checking
+
+In addition to checking roots, we also want to perform a diagnostic check on the residuals to ensure it is ready for forecasting. An appropriate model should have resiudals resembling normality, and pass all the diagnostic tests (no linear and no nonlinear dependence). To perform diagnostic tests we will need to calculate the lag and degrees of freedom (fitdf) for each model.
+
+## Model A: SMA(1)_12
+
+Although the normal QQ plot displays that $SMA(1)_{12}$ deviates from normality (heavy tails), it passes the Shapiro-Wilk normality test so we can conclude that it is normal. 
+
+```{r, fig.width=12, fig.height=4}
+# Check normality of SMA(1)_12
+par(mfrow=c(1,3))
+res_sma1 <- residuals(fit1_sma1)
+plot_hist(res_sma1, "Histogram of SMA(1)_12 Residuals")
+plot.ts(res_sma1, main="Time Series of SMA(1)_12 Residuals")
+qqPlot(res_sma1, main="Normal Q-Q Plot of SMA(1)_12", id=FALSE)
+```
+
+We have a lag of $\sqrt n =\sqrt{120}\approx11$ and fitdf of 1. This model passes Shapiro-Wilk and Box-Pierce test but fails both Box-Ljung tests. We can conclude that there is linear and nonlinear dependence which makes $SMA(1)_{12}$ model not ideal. 
+
+```{r}
+shapiro.test(res_sma1)
+Box.test(res_sma1, lag =11, type = c("Box-Pierce"), fitdf = 1)
+Box.test(res_sma1, lag = 11, type = c("Ljung-Box"), fitdf = 1)
+Box.test((res_sma1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+```
+
+
+The ACF and PACF of $SMA(1)_{12}$ show significance at lag 13. This observation led to the formation of model D where we tried increasing the non-seasonal part to q=1: $SARIMA(0,1,1)\times(0,1,1)_{12}$.
+
+```{r, fig.width=15, fig.height=5}
+par(mfrow=c(1,2))
+acf(res_sma1, lag.max=60)
+pacf(res_sma1, lag.max=60)
+```
+
+## Model D: SARIMA(0,1,1)x(0,1,1)_12
+
+Based on the figure below, Model D seems to have some heavy tails which deviates from normality. 
+
+```{r, fig.width=12, fig.height=4}
+par(mfrow=c(1,3))
+res_fit2_sarima1 <- residuals(fit2_sarima1)
+plot_hist(res_fit2_sarima1, "Histogram of SARIMA(0,1,1)x(0,1,1)_12 Residuals")
+plot.ts(res_fit2_sarima1, main="Time Series of SARIMA(0,1,1)x(0,1,1)_12 Residuals")
+qqPlot(res_fit2_sarima1, main="Normal Q-Q Plot of SARIMA(0,1,1)x(0,1,1)_12", id=FALSE)
+```
+
+Increasing to q=1 still results in signifiance at lag 13 in the ACF and PACF of our residuals. Due to this abnormal behavior, I originally tested models that set p=1 or P=1 however both still had signifance at lag 13 and having an AR component seemed to greatly increase the AICc value. Thus, I stuck with altering MA components which led me to the formulation of Model E setting Q=2.
+
+```{r, fig.width=15, fig.height=5}
+par(mfrow=c(1,2))
+acf(res_fit2_sarima1, lag.max=60)
+pacf(res_fit2_sarima1, lag.max=60)
+```
+
+For testing, we still have lag as 11 but now fitdf is 2. Model D fails the Shapiro-Wilk test, and McLeod-Li test. Thus, residuals do not have normality and exhibits nonlinear dependence. Failure of both these tests makes it a not ideal option for modeling.
+
+```{r}
+shapiro.test(res_fit2_sarima1)
+Box.test(res_fit2_sarima1, lag =11, type = c("Box-Pierce"), fitdf = 2)
+Box.test(res_fit2_sarima1, lag = 11, type = c("Ljung-Box"), fitdf = 2)
+Box.test((res_fit2_sarima1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+```
+
+## Model E: SARIMA(0,1,1)x(0,1,2)_12
+
+```{r, fig.width=12, fig.height=4}
+par(mfrow=c(1,3))
+res_fit3_sarima1 <- residuals(fit3_sarima1)
+plot_hist(res_fit3_sarima1, "Histogram of SARIMA(0,1,1)x(0,1,2)_12 Residuals")
+plot.ts(res_fit3_sarima1, main="Time Series of SARIMA(0,1,1)x(0,1,2)_12 Residuals")
+qqPlot(res_fit2_sarima1, main="Normal Q-Q Plot of SARIMA(0,1,1)x(0,1,2)_12", id=FALSE)
+```
+
+While our ACF and PACF of residuals indicate significance at lag 13, I have attempted to address the issue by exploring multiple different models and the significance at lag 13 still remains. This is an indication that SARIMA may not be the best method for modeling our data however it can still be a beneficial tool to understand our data.
+
+```{r, fig.width=15, fig.height=5}
+par(mfrow=c(1,2))
+acf(res_fit3_sarima1, lag.max=60)
+pacf(res_fit3_sarima1, lag.max=60)
+```
+
+For testing, we still have lag as 11 but now fitdf is 3. Model E passes all tests but the McLeod-Li test. Since Model E only fails the McLeod-Li test, we can conclude there is nonlinear dependence. Thus, our data is not necessarily suitable for SARIMA model and would likely need to look into a nonlinear model for more accuracy.
+
+```{r}
+shapiro.test(res_fit3_sarima1)
+Box.test(res_fit3_sarima1, lag =11, type = c("Box-Pierce"), fitdf = 3)
+Box.test(res_fit3_sarima1, lag = 11, type = c("Ljung-Box"), fitdf = 3)
+Box.test((res_fit3_sarima1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+```
+
+# Forecasting
+
+Model E passes the most tests while Model A has the lowest AICc. Given that the AICc difference among the three models is minimal, we will value passing residual tests over the low AICc value. In this case, **Model E passes the most tests so we will choose it as our final model.** While the model is not completely satisfactory according to our residual analysis, it is the best option given our limitations to SARIMA models.
+
+\newpage
+
+
+```{r, fig.keep='last', fig.width=15, fig.height=5, fig.cap='Forecasting on Transformed and Original Data with Model E'}
+# SARIMA(0,1,1)x(0,1,2)_12
+par(mfrow=c(1,3))
+
+# forecast on transformed data
+sflow.bc.clean <- as.vector(sflow.bc)
+fit.E <- arima(sflow.bc.clean, order=c(0,1,1), seasonal = list(order = c(0,1,2), period = 12), fixed=NULL, method="ML")
+pred.tr <- predict(fit.E, n.ahead = 12)
+U.tr <- pred.tr$pred+2*pred.tr$se # upper bound of PI
+L.tr <- pred.tr$pred-2*pred.tr$se # lower bound of PI
+
+ts.plot(sflow.bc.clean, xlim=c(1,length(sflow.bc.clean)+12), ylim = c(min(sflow.bc.clean),max(U.tr)), main="Transformed Data")  
+lines(U.tr, col="blue", lty="dashed") 
+lines(L.tr, col="blue", lty="dashed") 
+points((length(sflow.bc.clean)+1):(length(sflow.bc.clean)+12), pred.tr$pred, col="red")
+
+# forecast on original data
+sflow.clean <- as.vector(sflow.train.2)
+pred.orig <- reverse_bc(pred.tr$pred, lambda)
+U <- reverse_bc(U.tr, lambda)
+L <- reverse_bc(L.tr, lambda)
+
+sflow.clean.full <- as.vector(sflow.ts.cut)
+
+ts.plot(sflow.clean.full, xlim=c(1,length(sflow.clean)+12), ylim = c(min(sflow.clean),max(U)), main="Original Data")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sflow.clean)+1):(length(sflow.clean)+12), pred.orig, col="red")
+
+ts.plot(sflow.clean.full, xlim=c(100,length(sflow.clean)+12), ylim = c(10000,max(U)), main="Original Data (Zoomed in)")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sflow.clean)+1):(length(sflow.clean)+12), pred.orig, col="red")
+```
+
+Unfortunately, our test set is not within the prediction interval (in blue). Although the test set isn't in the P.I., the nature of the forecasted data matches the staggering pattern of our original dataset. As noted in our observations of nonlinear dependence, it is not surprising to see that Model E was not perfect in forecasting our data.
+
+
+# Conclusions
+
+Through a tradeoff of AICc value versus residual analysis tests, we selected Model E as our final model to forecast the number of Python questions asked. 
+
+$$
+\begin{aligned}
+\text{Model E:}&\quad \nabla_1\nabla_{12} bc(U_t)=(1-0.1055_{0.1056}B)(1-0.4232_{0.1181}B^{12}-0.0757_{0.1284}B^{24})Z_t, \quad \hat \sigma_Z^2=5296
+\end{aligned}
+$$
+
+Model E ended up not being a suitable model for forecasting since our test set was outside the prediction interval. To more accurately forecast this problem, it would be useful to look into nonlinear models for time series. While the goal of this project to *accurately* forecast Python questions was not achieved, this result still captured the staggering nature of this dataset. With the growth in AI development, versatile programming language like Python will likely continue seeing an increase in popularity and different technological paradigms could facilitate it. This development will likely be unpredictable and beyond the scope of SARIMA models so more complex time series analysis would be beneficial.  
+
+## Acknowledgements
+
+Professor Raisa Feldman 
+
+TA Thiha Aung
+
+TA Lihao Xiao
+
+Student Jessie Zhou
+
+Student Rebecca Chang
+
+## References
+
+Data obtained from Kaggle: https://www.kaggle.com/datasets/aishu200023/stackindex/code
+
+PSTAT 174 Lecture Slides
+
+# Appendix
+
+All code used to create the figures and tables above are included below. 
+
+```{r, eval=FALSE, echo=TRUE}
+# LIBRARIES INSTALLED
+
+library(kableExtra)
+library(knitr)
+library(tidyverse)
+library(MASS)
+library(MuMIn)
+library(UnitCircle)
+library(ggplot2)
+library(lemon)
+library(forecast)
+library(car)
+
+# Import data
+sflow <- read.csv('stack-overflow.csv')
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# CREATED FUNCTIONS 
+
+# outputs 3 visuals to check stationarity
+check_stationary <- function(ts, string, lag_max=60) {
+  # par(mfrow=c(2,2))
+  par(mfrow=c(1,3))
+  # Plot time series
+  ts.plot(ts, main=paste("TS of", string), cex=3)
+  
+  # Add trend and mean line
+  fit <- lm(ts ~ time(ts)) 
+  abline(fit, col="red")
+  abline(h=mean(ts), col="black")
+  # Decomposition
+  # plot(decompose(ts))
+  
+  # Plot ACF and PACF
+  #op2= par(mfrow=c(1,2))
+  acf(ts, lag.max=lag_max, main=paste("ACF of", string), cex=3)
+  pacf(ts, lag.max=lag_max, main=paste("PACF of", string), cex=3)
+}
+
+# outputs histogram compared with normal dist
+plot_hist <- function(data, plot_title) {
+  hist(data,density=20,breaks=20, col="blue", xlab="", prob=TRUE, main=paste(plot_title))
+  m <- mean(data)
+  std <- sqrt(var(data))
+  curve(dnorm(x,m,std), add=TRUE)
+}
+
+# reverses box cox transformation
+reverse_bc <- function(data, lambda) {
+  (data*lambda+1)^(1/lambda)
+}
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# DATA CLEANING
+
+# Edit data types
+sflow$month <- as.Date(paste0("01-", sflow$month), format = "%d-%y-%b")
+# Select only Python
+sflow.ts <- ts(sflow$python, start=c(2009,1,1), frequency=12)
+sflow.ts.cut <- ts(sflow.ts[13:132], start=c(2010,1,1), frequency=12)
+# Split intro train vs test
+sflow.train <-ts(sflow.ts[1:120], start=c(2009,1,1), frequency=12)
+sflow.test <- ts(sflow.ts[121:132], start=c(2019,1,1), frequency=12)
+# Cut off before 2010 
+sflow.train.2 <- ts(sflow.train[13:120], start=c(2010,1,1), frequency=12) # n=108
+```
+
+
+```{r, eval=FALSE, echo=TRUE}
+# FIGURE 2
+par(mfrow=c(1,3))
+ts.plot(sflow.ts, main="Stage 1: Original Data")
+ts.plot(sflow.train, main="Stage 2: Training Data")
+ts.plot(sflow.train.2, main="Stage 3: Training Data w/o 2010")
+
+# FIGURE 3
+par(mfrow=c(1,4))
+ts.plot(sflow.train.2, main="Time Series of Training Data")
+# Add trend and mean line
+fit <- lm(sflow.train.2 ~ time(sflow.train.2)) 
+abline(fit, col="red")
+abline(h=mean(sflow.train.2), col="blue")
+# Plot histogram
+hist(sflow.train.2, main="Histogram of Training Data")
+# Plot acf and pacf
+acf(sflow.train.2, main="ACF of Training Data", lag.max=60)
+pacf(sflow.train.2, main="PACF of Training Data", lag.max=60)
+
+# FIGURE 4
+t = 1:length(sflow.train.2)
+fit = lm(sflow.train.2 ~ t)
+bcTransform = boxcox(sflow.train.2 ~ t, plotit = TRUE) # 0 is not in the CI
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+
+sflow.bc <- (1/lambda)*(sflow.train.2^lambda-1) 
+sflow.log <- log(sflow.train.2)
+
+# FIGURE 5
+par(mfrow=c(2,3))
+ts.plot(sflow.train.2, main="Original")
+ts.plot(sflow.bc, main="Box-Cox Transform")
+ts.plot(sflow.log, main="Log Transform")
+
+hist(sflow.train.2, main="Original", breaks=10)
+hist(sflow.bc, main="Box-Cox Transform", breaks=10)
+hist(sflow.log, main="Log Transform", breaks=10)
+
+# FIGURE 6
+sflow.bc1 <- diff(sflow.bc, difference=1, lag=1)
+check_stationary(sflow.bc1, "BC(U_t), diff at lag 1")
+
+# FIGURE 7
+sflow.bc.1.12 <- diff(sflow.bc1, difference=1, lag=12)
+check_stationary(sflow.bc.1.12, "BC(U_t), diff at lag 1 and 12")
+sflow.bc.1.12.1 <- diff(sflow.bc.1.12, difference=1, lag=1)
+
+# Table of Differences
+difference <- c("No Difference","De-trended", "Seasonally Differenced + De-trended", "Seasonally Differenced + Den-trended twice")
+variance <- c(var(sflow.bc), var(sflow.bc1), var(sflow.bc.1.12), var(sflow.bc.1.12.1))
+vars_df <- data.frame(difference, variance)
+kable(vars_df) %>% kable_styling(position = "center") # best one is seasonally differenced and de-trended
+
+# FIGURE 8
+par(mfrow=c(1,2))
+plot_hist(sflow.bc, "Histogram of bc(U_t)")
+plot_hist(sflow.bc.1.12, "Histogram of bc(U_t), differenced at lag 12 & lag 1")
+
+# FIGURE 9
+par(mfrow=c(1,2))
+acf(sflow.bc.1.12, lag.max = 40, main="ACF of bc(U_t), differenced at lag 12 & lag 1")
+pacf(sflow.bc.1.12, lag.max=40, main="PACF of bc(U_t), differenced at lag 12 & lag 1")
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# Fit models 
+## SMA1
+fit1_sma1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(0,1,1), period=12), method = "ML")
+## SAR1
+fit1_sar1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(1,1,0), period=12), method = "ML")
+## SARIMA(0,1,0)x(1,1,1)_12
+fit1_sarima1 <- arima(sflow.bc, order=c(0,1,0), seasonal=list(order=c(1,1,1), period=12), method = "ML")
+## SARIMA(0,1,1)x(0,1,1)_12
+fit2_sarima1 <- arima(sflow.bc, order=c(0,1,1), seasonal=list(order=c(0,1,1), period=12), method = "ML")
+## SARIMA(0,1,1)x(0,1,2)_12
+fit3_sarima1 <- arima(sflow.bc, order=c(0,1,1), seasonal=list(order=c(0,1,2), period=12), method = "ML")
+## MA(12)
+fit_ma12 <- arima(sflow.bc, order=c(0,1,12), seasonal=list(order=c(0,1,0), period=12), method = "ML")
+## AR (12)
+fit_ar12 <- arima(sflow.bc, order=c(12,1,0), seasonal=list(order=c(0,1,0), period=12), method = "ML")
+```
+
+```{r, eval=TRUE, echo=FALSE}
+fit1_sma1
+fit1_sar1
+fit1_sarima1
+fit2_sarima1
+fit3_sarima1
+fit_ma12
+fit_ar12
+```
+
+
+```{r, eval=FALSE, echo=TRUE}
+# Table of AICc values
+Model <- c("A. SMA(1)_12","B. SAR(1)_12", "C. SARIMA(0,1,0)x(1,1,1)_12", "D. SARIMA(0,1,1)x(0,1,1)_12", "E. SARIMA(0,1,1)x(0,1,2)_12", "F. MA(12)", "G. AR(12)")
+AICc_Value <- c(AICc(fit1_sma1), AICc(fit1_sar1), AICc(fit1_sarima1), AICc(fit2_sarima1), AICc(fit3_sarima1), AICc(fit_ma12), AICc(fit_ar12))
+Significant_Coefficients <- c("SMA1", "SAR1", "SMA1", "SMA1", "SMA1", "MA12", "AR12")
+aicc_summary <- data.frame(Model, AICc_Value, Significant_Coefficients)
+kable(aicc_summary) %>% kable_styling(position = "center") # best one is seasonally differenced and de-trended
+
+# FIGURE 10
+uc.check(c(1, -0.423, -0.076), plot_output=T, print_output=F)
+
+# Diagnostic Checking
+## Model A
+par(mfrow=c(1,3))
+res_sma1 <- residuals(fit1_sma1)
+plot_hist(res_sma1, "Histogram of SMA(1)_12 Residuals")
+plot.ts(res_sma1, main="Time Series of SMA(1)_12 Residuals")
+qqPlot(res_sma1, main="Normal Q-Q Plot of SMA(1)_12", id=FALSE)
+
+shapiro.test(res_sma1)
+Box.test(res_sma1, lag =11, type = c("Box-Pierce"), fitdf = 1)
+Box.test(res_sma1, lag = 11, type = c("Ljung-Box"), fitdf = 1)
+Box.test((res_sma1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+
+par(mfrow=c(1,2))
+acf(res_sma1, lag.max=60)
+pacf(res_sma1, lag.max=60)
+
+## Model D
+par(mfrow=c(1,3))
+res_fit2_sarima1 <- residuals(fit2_sarima1)
+plot_hist(res_fit2_sarima1, "Histogram of SARIMA(0,1,1)x(0,1,1)_12 Residuals")
+plot.ts(res_fit2_sarima1, main="Time Series of SARIMA(0,1,1)x(0,1,1)_12 Residuals")
+qqPlot(res_fit2_sarima1, main="Normal Q-Q Plot of SARIMA(0,1,1)x(0,1,1)_12", id=FALSE)
+
+par(mfrow=c(1,2))
+acf(res_fit2_sarima1, lag.max=60)
+pacf(res_fit2_sarima1, lag.max=60)
+
+shapiro.test(res_fit2_sarima1)
+Box.test(res_fit2_sarima1, lag =11, type = c("Box-Pierce"), fitdf = 2)
+Box.test(res_fit2_sarima1, lag = 11, type = c("Ljung-Box"), fitdf = 2)
+Box.test((res_fit2_sarima1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+
+## Model E
+par(mfrow=c(1,3))
+res_fit3_sarima1 <- residuals(fit3_sarima1)
+plot_hist(res_fit3_sarima1, "Histogram of SARIMA(0,1,1)x(0,1,2)_12 Residuals")
+plot.ts(res_fit3_sarima1, main="Time Series of SARIMA(0,1,1)x(0,1,2)_12 Residuals")
+qqPlot(res_fit2_sarima1, main="Normal Q-Q Plot of SARIMA(0,1,1)x(0,1,2)_12", id=FALSE)
+
+par(mfrow=c(1,2))
+acf(res_fit3_sarima1, lag.max=60)
+pacf(res_fit3_sarima1, lag.max=60)
+
+shapiro.test(res_fit3_sarima1)
+Box.test(res_fit3_sarima1, lag =11, type = c("Box-Pierce"), fitdf = 3)
+Box.test(res_fit3_sarima1, lag = 11, type = c("Ljung-Box"), fitdf = 3)
+Box.test((res_fit3_sarima1)^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+
+# FORECASTING
+par(mfrow=c(1,2))
+
+## forecast on transformed data
+sflow.bc.clean <- as.vector(sflow.bc)
+fit.E <- arima(sflow.bc.clean, order=c(0,1,1), seasonal = list(order = c(0,1,2), period = 12), fixed=NULL, method="ML")
+pred.tr <- predict(fit.E, n.ahead = 12)
+U.tr <- pred.tr$pred+2*pred.tr$se # upper bound of PI
+L.tr <- pred.tr$pred-2*pred.tr$se # lower bound of PI
+
+ts.plot(sflow.bc.clean, xlim=c(1,length(sflow.bc.clean)+12), ylim = c(min(sflow.bc.clean),max(U.tr)), main="Transformed Data")  
+lines(U.tr, col="blue", lty="dashed") 
+lines(L.tr, col="blue", lty="dashed") 
+points((length(sflow.bc.clean)+1):(length(sflow.bc.clean)+12), pred.tr$pred, col="red")
+
+## forecast on original data
+sflow.clean <- as.vector(sflow.train.2)
+pred.orig <- reverse_bc(pred.tr$pred, lambda)
+U <- reverse_bc(U.tr, lambda)
+L <- reverse_bc(L.tr, lambda)
+
+sflow.clean.full <- as.vector(sflow.ts.cut)
+
+ts.plot(sflow.clean.full, xlim=c(1,length(sflow.clean)+12), ylim = c(min(sflow.clean),max(U)), main="Original Data")
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(sflow.clean)+1):(length(sflow.clean)+12), pred.orig, col="red")
+```
+

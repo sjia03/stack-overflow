@@ -1,0 +1,204 @@
+---
+title: "air-quality"
+output: html_document
+date: "2023-05-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+```
+
+
+# AQI
+
+```{r}
+# aq <- read.csv('AirQualityUCI.csv')
+aq <- read.table('AirQualityUCI.csv', sep=';', header=FALSE)
+colnames(aq) <- aq[1,]
+head(aq)
+```
+
+# Pollen
+
+```{r}
+library(pollen)
+```
+
+```{r}
+data(pollen_count)
+df <- subset(pollen_count, site=='Oz')
+df
+```
+
+```{r}
+op= par(mfrow=c(1,2))
+oz_alder <- ts(df$alder, start=c(2007,1,1), frequency=365.25)
+oz_birch <- ts(df$birch, start=c(2007,1,1), frequency=365.25)
+ts.plot(oz_alder)
+ts.plot(oz_birch)
+```
+
+```{r}
+plot(decompose(oz_alder))
+```
+
+# Microbusiness
+
+```{r}
+mb_den <- read.csv('microbusiness.csv')
+mb_den$first_day_of_month <- as.Date(mb_den$first_day_of_month, format='%Y-%m-%d')
+mb_den_ca <- mb_den %>% filter(state=='California')
+mb_den_ca_sc <- mb_den_ca %>% filter(county=='Santa Clara County')
+mb_den_ca_sc.ts <- ts(mb_den_ca_sc$microbusiness_density, start=c(2019,8,1), frequency=12)
+ts.plot(mb_den_ca_sc.ts)
+```
+
+# Functions
+
+```{r}
+check_stationary <- function(ts, lag_max=60) {
+  # Plot time series
+  ts.plot(ts)
+  
+  # Add trend and mean line
+  fit <- lm(ts ~ as.numeric(1:length(ts))) 
+  abline(fit, col="blue")
+  abline(h=mean(ts), col="red")
+  
+  # Decomposition
+  plot(decompose(ts))
+  
+  # Plot ACF and PACF
+  op= par(mfrow=c(1,2))
+  acf(ts, lag.max=lag_max)
+  pacf(ts, lag.max=lag_max)
+}
+```
+
+# Coffee
+
+```{r}
+coffee <- read.csv('coffee.csv')
+coffee$Date <- as.Date(coffee$Date, format='%Y-%m-%d')
+head(coffee)
+```
+
+```{r}
+ts.plot(coffee.ts)
+# Add trend and mean line
+fit <- lm(coffee$Close ~ as.numeric(1:length(coffee$Close))) 
+abline(fit)
+abline(h=mean(coffee$Close), col="red")
+```
+
+
+```{r}
+coffee.ts <- ts(coffee$Open, start=c(2001,1,3), frequency=365.25)
+check_stationary(coffee.ts, 100)
+```
+
+```{r}
+# Fix variance
+library(MASS)
+t = 1:length(coffee.ts)
+fit = lm(coffee.ts ~ t)
+bcTransform = boxcox(coffee.ts ~ t,plotit = TRUE) # lambda is at 0 -> so log transform
+
+# lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+coffee.log = log(coffee.ts)
+check_stationary(coffee.log, lag_max=60)
+```
+
+```{r}
+# Remove trend
+coffee.log1 <- diff(coffee.log, 1)
+# coffee.log1.12 <- diff(coffee.log1, 12)
+check_stationary(coffee.log1, lag_max=40)
+```
+
+```{r}
+coffee.log1.12 <- diff(coffee.log1, 12)
+check_stationary(coffee.log1.12, lag_max=40)
+```
+
+
+```{r}
+var(coffee.ts)
+var(coffee.log)
+var(coffee.log1)
+var(coffee.log1.12)
+```
+
+
+```{r}
+milk <- subset(tsdl, 12, "Agriculture")[[3]]
+#health <- subset(tsdl, "Health")
+#subset(tsdl, "Agriculture")
+check_stationary(milk, milk)
+
+plot(milk)
+fit <- lm(milk ~ as.numeric(1:length(milk))) 
+abline(fit, col='blue')
+#abline(h=mean(milk), col="red")
+```
+
+```{r}
+# Output description and time series plot
+sift_tsdl <- function(numbers) {
+  op=par(mfrow=c(2,(numbers/2)+1)
+    about <- attr(tsdl[[number]], "description")
+    plot(tsdl[[number]])
+    title(num)
+  
+}
+```
+
+```{r}
+sift_tsdl(c(1:10))
+```
+
+```{r}
+apple <- read.csv('apple-stock.csv')
+apple$Date <- as.Date(apple$Date, format='%m/%d/%Y')
+apple[,2] <- gsub("\\$", "", apple[,2])
+apple[,2] <- as.numeric(apple[,2])
+min(apple$Date)
+```
+
+```{r}
+apple.ts <- ts(apple$Close.Last, start=c(2010,3,1), frequency=365.25)
+check_stationary(apple.ts)
+```
+
+```{r}
+apple.log <- log(apple.ts)
+check_stationary(apple.log)
+```
+
+```{r}
+apple.log1 <- diff(apple.log, 1)
+check_stationary(apple.log1, lag_max=100)
+```
+```{r}
+apple.log2 <- diff(apple.log1, 1)
+check_stationary(apple.log2, lag_max=100)
+```
+
+# Stack Overflow
+
+```{r}
+sflow <- read.csv('stack-overflow.csv')
+#sflow$month <- as.Date(sflow$month, format='%Y-%m')
+sflow.ts <- ts(sflow$python, start=c(9,1), frequency=12)
+check_stationary(sflow.ts)
+```
+
+```{r}
+# Transform
+```
+
